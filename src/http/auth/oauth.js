@@ -74,7 +74,7 @@ router.post(["/oauth/register", "/register"], (req, res) => {
   registerOAuthClient({ clientId, redirectUri });
   res.status(201).json({
     client_id: clientId,
-    client_secret: null,
+    client_secret: "",
     redirect_uris: redirectUri ? [redirectUri] : [],
     client_name: client_name || "MCP Client",
     token_endpoint_auth_method: "none",
