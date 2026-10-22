@@ -24,20 +24,27 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@anthropic-ai/mcpb": "^2.1.2",
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "anylist": "^0.8.5",
-    "bcrypt": "^6.0.0",
-    "better-sqlite3": "^12.8.0",
-    "dotenv": "^16.4.5",
-    "express": "^5.2.1",
-    "express-session": "^1.19.0",
-    "google-auth-library": "^10.6.2"
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "anylist": "file:vendor/anylist-0.8.6.tgz",
+    "bcrypt": "6.0.0",
+    "better-sqlite3": "13.0.3",
+    "dotenv": "18.0.8",
+    "express": "5.3.0",
+    "express-session": "1.19.0",
+    "google-auth-library": "11.3.1"
   },
   "devDependencies": {
-    "@semantic-release/changelog": "^7.0.0",
-    "@semantic-release/exec": "^7.1.0",
-    "@semantic-release/git": "^11.0.1",
-    "semantic-release": "^25.0.9"
+    "@semantic-release/changelog": "7.0.0",
+    "@semantic-release/exec": "7.1.0",
+    "@semantic-release/git": "11.0.1",
+    "semantic-release": "25.0.9",
+    "@anthropic-ai/mcpb": "2.1.2"
+  },
+  "overrides": {
+    "http-cache-semantics": "4.3.0",
+    "proxy-addr": "2.0.8",
+    "follow-redirects": "1.16.1",
+    "qs": "6.16.1",
+    "brace-expansion": "5.0.12"
   }
 }
