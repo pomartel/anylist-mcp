@@ -51,6 +51,8 @@ router.post("/setup", async (req, res) => {
       req.session.setupError = `Could not connect to AnyList: ${err.message}`;
       return res.redirect("/setup");
     }
+  } finally {
+    await testClient.disconnect().catch(() => console.error("Failed to disconnect the setup client"));
   }
 
   upsertAnyListCredentials(req.session.userId, {
@@ -60,7 +62,7 @@ router.post("/setup", async (req, res) => {
   });
 
   // Evict any cached session so the new credentials take effect immediately
-  evictSession(req.session.userId);
+  await evictSession(req.session.userId);
 
   // If an OAuth flow was pending, continue it
   if (req.session.oauthParams) {

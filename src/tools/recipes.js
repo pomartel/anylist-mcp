@@ -3,7 +3,7 @@ import { textResponse, errorResponse } from "./helpers.js";
 import { createElicitationHelpers } from "./elicitation.js";
 import { normalizeRecipe } from "../recipe-normalizer.js";
 
-export function register(server, getClient) {
+export function register(server, getClient, releaseClient) {
   const { elicitRequiredField, elicitConfirmation } = createElicitationHelpers(server);
 
   server.registerTool("recipes", {
@@ -37,8 +37,9 @@ export function register(server, getClient) {
     }
   }, async (params) => {
     const { action, name, search, ingredients, steps, note, source_name, source_url, prep_time, cook_time, servings, url, text: recipeText, save: saveRecipe } = params;
+    let client;
     try {
-      const client = await getClient();
+      client = await getClient();
       await client.connect(null);
       switch (action) {
         case "list": {
@@ -190,6 +191,8 @@ export function register(server, getClient) {
       }
     } catch (error) {
       return errorResponse(`Recipes ${action} failed: ${error.message}`);
+    } finally {
+      if (client) await releaseClient?.(client);
     }
   });
 }

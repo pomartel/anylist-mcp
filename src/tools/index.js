@@ -12,11 +12,13 @@ import { register as registerRecipeCollections } from "./recipe-collections.js";
  *   Async factory that returns the AnyListClient for the current request/session.
  *   For stdio: always returns the same singleton client.
  *   For HTTP: returns the per-user client from the session manager.
+ * @param {(client: import("../anylist-client.js").default) => void | Promise<void>} [releaseClient]
+ *   Ends the HTTP session's use by this tool, including on error.
  */
-export function registerAllTools(server, getClient) {
-  registerHealth(server, getClient);
-  registerShopping(server, getClient);
-  registerRecipes(server, getClient);
-  registerMealPlan(server, getClient);
-  registerRecipeCollections(server, getClient);
+export function registerAllTools(server, getClient, releaseClient) {
+  registerHealth(server, getClient, releaseClient);
+  registerShopping(server, getClient, releaseClient);
+  registerRecipes(server, getClient, releaseClient);
+  registerMealPlan(server, getClient, releaseClient);
+  registerRecipeCollections(server, getClient, releaseClient);
 }

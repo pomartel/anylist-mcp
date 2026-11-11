@@ -38,7 +38,7 @@ async function validateStoreName(client, storeName) {
   return { valid: true, message: null };
 }
 
-export function register(server, getClient) {
+export function register(server, getClient, releaseClient) {
   const { elicitListName, elicitItemChoice, elicitRequiredField } = createElicitationHelpers(server);
 
   function findPartialMatches(client, itemName, wantChecked = false) {
@@ -101,8 +101,9 @@ export function register(server, getClient) {
     if (category && !valid_categories.includes(category)) {
       throw new Error(`Invalid input for field "category": "${category}". Valid categories are: ${valid_categories.join(", ")}`);
     }
+    let client;
     try {
-      const client = await getClient();
+      client = await getClient();
       switch (action) {
         case "list_lists": {
           await client.connect(list_name || null);
@@ -243,6 +244,8 @@ export function register(server, getClient) {
       }
     } catch (error) {
       return errorResponse(`Shopping ${action} failed: ${error.message}`);
+    } finally {
+      if (client) await releaseClient?.(client);
     }
   });
 }

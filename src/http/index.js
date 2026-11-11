@@ -13,7 +13,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 
 import { getDb, loadAllowedEmails, deleteExpiredTokens } from "./db.js";
-import { getOrCreateSession } from "./session-manager.js";
+import { getOrCreateSession, releaseSession } from "./session-manager.js";
 import oauthRouter, { requireBearerToken } from "./auth/oauth.js";
 import onboardingRouter from "./onboarding.js";
 import { registerAllTools } from "../tools/index.js";
@@ -144,7 +144,7 @@ const mcpSessions = new Map(); // sessionId → { server, transport }
 
 function createMcpServer(userId) {
   const mcpServer = new McpServer({ name: "anylist-mcp-server", version: "1.8.0" });
-  registerAllTools(mcpServer, () => getOrCreateSession(userId));
+  registerAllTools(mcpServer, () => getOrCreateSession(userId), releaseSession);
   return mcpServer;
 }
 

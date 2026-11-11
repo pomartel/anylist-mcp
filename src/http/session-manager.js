@@ -4,56 +4,67 @@ import { getAnyListCredentials } from "./db.js";
 const IDLE_TIMEOUT_MS =
   (parseInt(process.env.ANYLIST_SESSION_IDLE_MINUTES, 10) || 30) * 60 * 1000;
 
-// Map of userId → { client: AnyListClient, timer: NodeJS.Timeout }
-const sessions = new Map();
-
-/**
- * Get or create an AnyListClient for a user, keeping the connection alive.
- * On first call for a user, loads credentials from the DB and connects.
- * Resets the idle timer on each call.
- *
- * @param {string} userId
- * @returns {Promise<AnyListClient>}
- */
-export async function getOrCreateSession(userId) {
-  if (sessions.has(userId)) {
-    const session = sessions.get(userId);
-    resetIdleTimer(userId, session);
-    return session.client;
-  }
-
+function createClient(userId) {
   const creds = getAnyListCredentials(userId);
   if (!creds) {
     throw new Error("No AnyList credentials configured for this user. Complete setup first.");
   }
-
-  const client = new AnyListClient({
+  return new AnyListClient({
     username: creds.username,
     password: creds.password,
     defaultListName: creds.defaultListName,
   });
-
-  const session = { client, timer: null };
-  sessions.set(userId, session);
-  resetIdleTimer(userId, session);
-
-  return client;
 }
 
-/**
- * Evict a user's session immediately (e.g. after credential change).
- */
-export function evictSession(userId) {
-  const session = sessions.get(userId);
-  if (session) {
-    clearTimeout(session.timer);
-    sessions.delete(userId);
+export function createSessionManager(newClient = createClient, idleMs = IDLE_TIMEOUT_MS) {
+  const sessions = new Map();
+  const leases = new WeakMap();
+
+  async function close(session) {
+    leases.delete(session.client);
+    try {
+      await session.client.disconnect();
+    } catch {
+      console.error("Failed to disconnect an AnyList session");
+    }
   }
+
+  function evictSession(userId) {
+    const session = sessions.get(userId);
+    if (!session) return;
+    sessions.delete(userId);
+    clearTimeout(session.timer);
+    if (!session.active) return close(session);
+  }
+
+  function getOrCreateSession(userId) {
+    let session = sessions.get(userId);
+    if (!session) {
+      session = { userId, client: newClient(userId), active: 0, timer: null };
+      sessions.set(userId, session);
+      leases.set(session.client, session);
+    }
+    clearTimeout(session.timer);
+    session.active++;
+    return session.client;
+  }
+
+  function releaseSession(client) {
+    const session = leases.get(client);
+    if (!session) return;
+    session.active--;
+    if (session.active > 0) return;
+    // Credentials may have changed while this command was running.
+    if (sessions.get(session.userId) !== session) return close(session);
+    session.timer = setTimeout(() => {
+      if (sessions.get(session.userId) === session && !session.active) {
+        void evictSession(session.userId);
+      }
+    }, idleMs);
+    session.timer.unref();
+  }
+
+  return { getOrCreateSession, releaseSession, evictSession };
 }
 
-function resetIdleTimer(userId, session) {
-  clearTimeout(session.timer);
-  session.timer = setTimeout(() => {
-    sessions.delete(userId);
-  }, IDLE_TIMEOUT_MS);
-}
+export const { getOrCreateSession, releaseSession, evictSession } = createSessionManager();

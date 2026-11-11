@@ -2,7 +2,7 @@ import { z } from "zod";
 import { textResponse, errorResponse } from "./helpers.js";
 import { createElicitationHelpers } from "./elicitation.js";
 
-export function register(server, getClient) {
+export function register(server, getClient, releaseClient) {
   const { elicitRequiredField } = createElicitationHelpers(server);
 
   server.registerTool("meal_plan", {
@@ -25,8 +25,9 @@ export function register(server, getClient) {
     }
   }, async (params) => {
     const { action, date, start_date, end_date, title, recipe_id, label_id, details, event_id } = params;
+    let client;
     try {
-      const client = await getClient();
+      client = await getClient();
       await client.connect(null);
       switch (action) {
         case "list_events": {
@@ -73,6 +74,8 @@ export function register(server, getClient) {
       }
     } catch (error) {
       return errorResponse(`Meal plan ${action} failed: ${error.message}`);
+    } finally {
+      if (client) await releaseClient?.(client);
     }
   });
 }
