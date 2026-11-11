@@ -1,5 +1,28 @@
 import AnyList from '../anylist-js/lib/index.js';
 import { normalizeRecipe } from './recipe-normalizer.js';
+import { basename, dirname } from 'node:path';
+
+const governorModule = process.env.ANYLIST_GOVERNOR_MODULE;
+const governorDatabase = process.env.ANYLIST_GOVERNOR_DATABASE;
+if (!!governorModule !== !!governorDatabase) {
+  throw new Error('Configure both ANYLIST_GOVERNOR_MODULE and ANYLIST_GOVERNOR_DATABASE');
+}
+const policy = governorModule ? await import(governorModule) : null;
+
+export function governHttp(client, governor) {
+  const options = {
+    retry: { limit: 0 }, timeout: { request: 30_000 },
+    hooks: {
+      beforeRequest: [() => governor.assertAvailable()],
+      afterResponse: [response => {
+        if (response.statusCode === 429) governor.normalize({ response });
+        return response;
+      }],
+    },
+  };
+  client.authClient = client.authClient.extend(options);
+  client.client = client.client.extend(options);
+}
 
 class AnyListClient {
   /**
@@ -13,6 +36,8 @@ class AnyListClient {
     this._username = username || null;
     this._password = password || null;
     this.defaultListName = defaultListName || null;
+    this.governor = null;
+    this.loading = null;
   }
 
   async connect(listName = null) {
@@ -32,26 +57,19 @@ class AnyListClient {
       throw error;
     }
 
-    // If already connected to the same list, skip reconnection
-    if (this.client && this.targetList && this.targetList.name === targetListName) {
+    if (!this.governor && policy?.accountDatabaseName(username) === basename(governorDatabase || '')) {
+      this.governor = policy.openAccountGovernor(dirname(governorDatabase), username);
+    }
+    this.governor?.assertAvailable();
+    if (!this.governor && this.client && this.targetList?.name === targetListName) {
       return true;
     }
 
     try {
-      // Create AnyList client if not already authenticated
-      if (!this.client) {
-        this.client = new AnyList({
-          email: username,
-          password: password
-        });
-
-        // Authenticate
-        console.error(`Connecting to AnyList as ${username}...`);
-        await this.client.login();
-        console.error('Successfully authenticated with AnyList');
-
-        await this.client.getLists();
+      if (!this.loading) {
+        this.loading = this.loadLists(username, password).finally(() => { this.loading = null; });
       }
+      await this.loading;
 
       // Find the target list
       console.error(`Looking for list: "${targetListName}"`);
@@ -71,6 +89,25 @@ class AnyListClient {
       const wrappedError = new Error(`Failed to connect to AnyList: ${error.message}`);
       console.error(wrappedError.message);
       throw wrappedError;
+    }
+  }
+
+  async loadLists(username, password) {
+    if (this.client) {
+      if (this.governor) await this.client.getLists();
+      return;
+    }
+    const client = new AnyList({ email: username, password });
+    try {
+      if (this.governor) governHttp(client, this.governor);
+      // The shared sync daemon owns recovery. Governed MCP sessions read on
+      // demand so SDK websocket callbacks never issue an independent probe.
+      await client.login(!this.governor);
+      await client.getLists();
+      this.client = client;
+    } catch (error) {
+      client.teardown();
+      throw error;
     }
   }
 
@@ -836,6 +873,8 @@ class AnyListClient {
     }
     this.client = null;
     this.targetList = null;
+    this.governor?.close();
+    this.governor = null;
   }
 }
 

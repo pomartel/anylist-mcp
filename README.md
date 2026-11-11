@@ -6,6 +6,10 @@ Two deployment modes:
 - **Local (stdio)** — runs on your machine alongside Claude Desktop or Claude Code. Fastest setup, no server required.
 - **HTTP server** — runs in Docker behind a Cloudflare Tunnel. Required for Claude Web, Claude Mobile, or home assistant and useful for sharing access across devices or users.
 
+## Shared AnyList cooldown
+
+When running alongside alexa-anylist-sync, set `ANYLIST_GOVERNOR_MODULE` to its built `dist/src/anylist-governor.js` and `ANYLIST_GOVERNOR_DATABASE` to the absolute path of its account SQLite file. The service user needs write access to the database directory. For the matching account, MCP reads lists on demand, records HTTP 429 responses, and waits for the synchronizer to confirm recovery. Other accounts keep their normal session behavior.
+
 ## Tools Overview
 
 The MCP server provides **5 domain-grouped tools** rather than 18+ individual ones:
