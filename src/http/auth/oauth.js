@@ -1,16 +1,17 @@
+import { validRedirectUri } from "../redirect-uri.js";
 import { Router } from "express";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 import {
   getOAuthClient,
   registerOAuthClient,
-  getOAuthClientWithSecret,
   saveOAuthCode,
-  consumeOAuthCode,
+  getOAuthCode,
+  exchangeOAuthCode,
   saveOAuthTokens,
   getTokenRecord,
   getTokenByRefresh,
-  deleteTokensByRefresh,
+  rotateOAuthTokens,
   getAnyListCredentials,
 } from "../db.js";
 import { loginWithPassword, registerWithPassword } from "./providers/password.js";
@@ -71,6 +72,9 @@ router.post(["/oauth/register", "/register"], (req, res) => {
   const { redirect_uris, client_name } = req.body || {};
   const clientId = randomUUID();
   const redirectUri = Array.isArray(redirect_uris) ? redirect_uris[0] : redirect_uris || null;
+  if (!validRedirectUri(redirectUri)) {
+    return res.status(400).json({ error: "invalid_redirect_uri" });
+  }
   registerOAuthClient({ clientId, redirectUri });
   res.status(201).json({
     client_id: clientId,
@@ -89,19 +93,22 @@ router.post(["/oauth/register", "/register"], (req, res) => {
 router.get(["/oauth/authorize", "/authorize"], (req, res) => {
   const { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope } = req.query;
 
-  if (!client_id) {
-    return res.status(400).send("Missing required parameter: client_id");
+  const client = typeof client_id === "string" && getOAuthClient(client_id);
+  if (!client || !validRedirectUri(redirect_uri) || redirect_uri !== client.redirect_uri) {
+    return res.status(400).send("Unknown client or unregistered redirect URI.");
+  }
+  if (req.query.response_type !== "code" || (state !== undefined && typeof state !== "string") ||
+      (scope !== undefined && (typeof scope !== "string" || scope !== "mcp"))) {
+    return res.status(400).send("Invalid authorization request.");
+  }
+  if (!client.client_secret_hash || code_challenge !== undefined || code_challenge_method !== undefined) {
+    if (code_challenge_method !== "S256" || typeof code_challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(code_challenge)) {
+      return res.status(400).send("An S256 PKCE challenge is required.");
+    }
   }
 
-  // Confidential clients (those with a client_secret) don't use PKCE
-  const clientRecord = getOAuthClientWithSecret(client_id);
-  const isConfidential = !!(clientRecord && clientRecord.client_secret_hash);
-  if (!isConfidential && !code_challenge) {
-    return res.status(400).send("Missing required parameter: code_challenge");
-  }
-
-  // Store OAuth params in session
-  req.session.oauthParams = { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope };
+  req.session.oauthParams = { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope,
+    consentToken: randomBytes(32).toString("hex") };
 
   // If the user already has an active session, skip the login step
   if (req.session.userId) {
@@ -116,9 +123,8 @@ router.get(["/oauth/authorize", "/authorize"], (req, res) => {
 
 router.post(["/oauth/token", "/token"], async (req, res) => {
   const body = req.body || {};
-  const { grant_type, client_id } = body;
-  const bodyKeys = Object.keys(body);
-  console.log(`[oauth] token request grant_type=${grant_type} client_id=${client_id ? client_id.slice(0, 8) + "…" : "none"} fields=${bodyKeys.join(",")}`);
+  const { grant_type } = body;
+  res.set("Cache-Control", "no-store");
 
   if (grant_type === "authorization_code") {
     return handleAuthCodeGrant(req, res);
@@ -129,113 +135,76 @@ router.post(["/oauth/token", "/token"], async (req, res) => {
   if (grant_type === "client_credentials") {
     return handleClientCredentialsGrant(req, res);
   }
-  console.log(`[oauth] ANOMALOUS token request: unknown grant_type=${grant_type} ip=${req.ip} fields=${bodyKeys.join(",")}`);
   return res.status(400).json({ error: "unsupported_grant_type" });
 });
 
 async function handleAuthCodeGrant(req, res) {
   const { code, redirect_uri, code_verifier, client_id, client_secret } = req.body;
 
-  if (!code) {
-    return res.status(400).json({ error: "invalid_request", error_description: "Missing code" });
+  const client = typeof client_id === "string" && getOAuthClient(client_id);
+  if (!client || !await authenticatesClient(client, client_secret)) {
+    return res.status(401).json({ error: "invalid_client" });
   }
-
-  const codeRow = consumeOAuthCode(code);
-  if (!codeRow) {
-    return res.status(400).json({ error: "invalid_grant", error_description: "Code invalid or expired" });
+  const row = typeof code === "string" && getOAuthCode(code);
+  if (!row || row.client_id !== client_id || !validRedirectUri(redirect_uri) ||
+      redirect_uri !== row.redirect_uri || redirect_uri !== client.redirect_uri) {
+    return res.status(400).json({ error: "invalid_grant" });
   }
-
-  if (code_verifier) {
-    // Public client: verify PKCE
-    const expected = codeRow.code_challenge;
-    const method = codeRow.challenge_method;
-    const verifierHash = method === "S256"
-      ? createHash("sha256").update(code_verifier).digest("base64url")
-      : code_verifier; // plain (discouraged)
-    if (verifierHash !== expected) {
-      return res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
+  if (row.code_challenge || !client.client_secret_hash || code_verifier !== undefined) {
+    if (row.challenge_method !== "S256" || typeof code_verifier !== "string" ||
+        !/^[A-Za-z0-9._~-]{43,128}$/.test(code_verifier) ||
+        createHash("sha256").update(code_verifier).digest("base64url") !== row.code_challenge) {
+      return res.status(400).json({ error: "invalid_grant" });
     }
-  } else if (client_id && client_secret) {
-    // Confidential client: verify client secret
-    const client = getOAuthClientWithSecret(client_id);
-    if (!client || !client.client_secret_hash || client_id !== codeRow.client_id) {
-      return res.status(401).json({ error: "invalid_client" });
-    }
-    const valid = await bcrypt.compare(client_secret, client.client_secret_hash);
-    if (!valid) {
-      return res.status(401).json({ error: "invalid_client" });
-    }
-  } else {
-    return res.status(400).json({ error: "invalid_request", error_description: "Missing code_verifier or client credentials" });
   }
+  return issueTokens(res, row, tokens => exchangeOAuthCode(code, tokens));
+}
 
-  const accessToken = randomBytes(32).toString("hex");
-  const refreshToken = randomBytes(32).toString("hex");
-  saveOAuthTokens({
-    accessToken,
-    refreshToken,
-    userId: codeRow.user_id,
-    clientId: codeRow.client_id,
-    scope: codeRow.scope,
-  });
-
-  res.json({
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: 3600,
-    refresh_token: refreshToken,
-    scope: codeRow.scope || "mcp",
-  });
+async function authenticatesClient(client, secret) {
+  if (!client.client_secret_hash) return !secret;
+  return typeof secret === "string" && !!secret && bcrypt.compare(secret, client.client_secret_hash);
 }
 
 async function handleRefreshGrant(req, res) {
-  const { refresh_token } = req.body;
-  if (!refresh_token) {
-    return res.status(400).json({ error: "invalid_request" });
+  const { refresh_token, client_id, client_secret } = req.body;
+  const row = typeof refresh_token === "string" && getTokenByRefresh(refresh_token);
+  if (!row || row.refresh_expires_at <= Math.floor(Date.now() / 1000) ||
+      (client_id !== undefined && client_id !== row.client_id)) {
+    return res.status(400).json({ error: "invalid_grant" });
   }
-  const tokenRow = getTokenByRefresh(refresh_token);
-  if (!tokenRow || tokenRow.refresh_expires_at < Math.floor(Date.now() / 1000)) {
-    return res.status(400).json({ error: "invalid_grant", error_description: "Refresh token invalid or expired" });
+  const client = getOAuthClient(row.client_id);
+  if (!client || (client.client_secret_hash && !client_id) || !await authenticatesClient(client, client_secret)) {
+    return res.status(401).json({ error: "invalid_client" });
   }
+  return issueTokens(res, row, tokens => rotateOAuthTokens(refresh_token, tokens));
+}
 
-  deleteTokensByRefresh(refresh_token);
-
+function issueTokens(res, row, persist) {
   const accessToken = randomBytes(32).toString("hex");
-  const newRefreshToken = randomBytes(32).toString("hex");
-  saveOAuthTokens({
-    accessToken,
-    refreshToken: newRefreshToken,
-    userId: tokenRow.user_id,
-    clientId: tokenRow.client_id,
-    scope: tokenRow.scope,
-  });
-
-  res.json({
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: 3600,
-    refresh_token: newRefreshToken,
-    scope: tokenRow.scope || "mcp",
+  const refreshToken = randomBytes(32).toString("hex");
+  if (!persist({ accessToken, refreshToken, userId: row.user_id, clientId: row.client_id, scope: row.scope })) {
+    return res.status(400).json({ error: "invalid_grant" });
+  }
+  return res.json({
+    access_token: accessToken, token_type: "Bearer", expires_in: 3600,
+    refresh_token: refreshToken, scope: row.scope || "mcp",
   });
 }
 
 async function handleClientCredentialsGrant(req, res) {
   const { client_id, client_secret } = req.body;
 
-  if (!client_id || !client_secret) {
-    console.log(`[oauth] client_credentials missing fields: client_id=${!!client_id} client_secret=${!!client_secret}`);
+  if (typeof client_id !== "string" || typeof client_secret !== "string" || !client_secret) {
     return res.status(400).json({ error: "invalid_request", error_description: "Missing client_id or client_secret" });
   }
 
-  const client = getOAuthClientWithSecret(client_id);
+  const client = getOAuthClient(client_id);
   if (!client || !client.client_secret_hash) {
-    console.log(`[oauth] client_credentials client not found or not confidential: client_id=${client_id.slice(0, 8)}…`);
     return res.status(401).json({ error: "invalid_client" });
   }
 
   const valid = await bcrypt.compare(client_secret, client.client_secret_hash);
   if (!valid) {
-    console.log(`[oauth] client_credentials secret mismatch: client_id=${client_id.slice(0, 8)}…`);
     return res.status(401).json({ error: "invalid_client" });
   }
 
@@ -249,7 +218,6 @@ async function handleClientCredentialsGrant(req, res) {
     scope: "mcp",
   });
 
-  console.log(`[oauth] client_credentials token issued for client_id=${client_id.slice(0, 8)}… user_id=${client.user_id}`);
   res.json({
     access_token: accessToken,
     token_type: "Bearer",
@@ -262,32 +230,26 @@ async function handleClientCredentialsGrant(req, res) {
 
 router.post("/auth/login", async (req, res) => {
   const { email, password } = req.body || {};
-  console.log(`[auth] login attempt: ${email}`);
   if (!email || !password) {
     return renderLogin(res, "Email and password are required.");
   }
   try {
     const user = await loginWithPassword(email, password);
-    console.log(`[auth] login success: ${email} (${user.id})`);
     return completeAuth(req, res, user);
   } catch (err) {
-    console.log(`[auth] login failed: ${email} — ${err.message}`);
     return renderLogin(res, err.message);
   }
 });
 
 router.post("/auth/register", async (req, res) => {
   const { email, password } = req.body || {};
-  console.log(`[auth] register attempt: ${email}`);
   if (!email || !password) {
     return renderLogin(res, "Email and password are required.");
   }
   try {
     const user = await registerWithPassword(email, password);
-    console.log(`[auth] register success: ${email} (${user.id})`);
     return completeAuth(req, res, user);
   } catch (err) {
-    console.log(`[auth] register failed: ${email} — ${err.message}`);
     return renderLogin(res, err.message);
   }
 });
@@ -298,31 +260,18 @@ router.post("/auth/google", async (req, res) => {
     const user = await loginWithGoogle(credential);
     return completeAuth(req, res, user);
   } catch (err) {
-    console.log(`[auth] google failed — ${err.message}`);
     return renderLogin(res, err.message);
   }
 });
 
-/**
- * After successful authentication, check if the user has AnyList credentials.
- * If yes: issue OAuth code and redirect back to the client.
- * If no: redirect to /setup to collect them first.
- */
 function completeAuth(req, res, user) {
-  req.session.userId = user.id;
   const oauth = req.session.oauthParams;
-  const hasCreds = !!getAnyListCredentials(user.id);
-  console.log(`[auth] completeAuth user:${user.id} oauthPending:${!!oauth} hasCreds:${hasCreds}`);
-
-  if (!oauth) {
-    return res.redirect("/setup");
-  }
-
-  if (!hasCreds) {
-    return res.redirect("/setup");
-  }
-
-  return issueCodeAndRedirect(req, res, user.id, oauth);
+  req.session.regenerate(err => {
+    if (err) return res.sendStatus(500);
+    req.session.userId = user.id;
+    if (oauth) req.session.oauthParams = oauth;
+    res.redirect(oauth && getAnyListCredentials(user.id) ? "/oauth/consent" : "/setup");
+  });
 }
 
 /**
@@ -335,6 +284,8 @@ router.get("/oauth/consent", (req, res) => {
   // Render consent view
   res.render("consent", {
     clientId: req.session.oauthParams.client_id,
+    redirectUri: req.session.oauthParams.redirect_uri,
+    consentToken: req.session.oauthParams.consentToken,
     scope: req.session.oauthParams.scope || "mcp",
   });
 });
@@ -346,7 +297,9 @@ router.post("/oauth/consent", (req, res) => {
 
   if (!userId || !oauth) return res.redirect("/login");
 
+  if (!oauth.consentToken || req.body?.consentToken !== oauth.consentToken) return res.sendStatus(403);
   if (approve !== "yes") {
+    delete req.session.oauthParams;
     const redirectUri = oauth.redirect_uri;
     const state = oauth.state;
     const url = new URL(redirectUri);
@@ -386,19 +339,16 @@ function issueCodeAndRedirect(req, res, userId, oauth) {
 export function requireBearerToken(req, res, next) {
   const auth = req.headers["authorization"] || "";
   if (!auth.startsWith("Bearer ")) {
-    console.log(`[oauth] ANOMALOUS bearer missing/wrong auth header: method=${req.method} path=${req.path} auth=${auth ? auth.slice(0, 20) + "…" : "none"} ip=${req.ip}`);
     res.setHeader("WWW-Authenticate", `Bearer realm="${baseUrl(req)}", resource_metadata="${baseUrl(req)}/.well-known/oauth-protected-resource"`);
     return res.status(401).json({ error: "unauthorized" });
   }
   const token = auth.slice(7);
   const record = getTokenRecord(token);
   if (!record) {
-    console.log(`[oauth] ANOMALOUS unknown bearer token ip=${req.ip}`);
     res.setHeader("WWW-Authenticate", `Bearer realm="${baseUrl(req)}", error="invalid_token"`);
     return res.status(401).json({ error: "invalid_token" });
   }
   if (record.expires_at < Math.floor(Date.now() / 1000)) {
-    console.log(`[oauth] ANOMALOUS expired bearer token user_id=${record.user_id} ip=${req.ip}`);
     res.setHeader("WWW-Authenticate", `Bearer realm="${baseUrl(req)}", error="invalid_token"`);
     return res.status(401).json({ error: "invalid_token" });
   }

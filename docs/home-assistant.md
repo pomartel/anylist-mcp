@@ -15,12 +15,18 @@ This guide connects the anylist-mcp HTTP server to Home Assistant as an MCP tool
 Run this inside the running Docker container:
 
 ```bash
-docker compose exec anylist-mcp node scripts/create-client.js you@example.com "Home Assistant"
+docker compose exec anylist-mcp node scripts/create-client.js you@example.com "Home Assistant" "https://my.home-assistant.io/redirect/oauth"
 ```
 
 Replace `you@example.com` with the email you registered on the server and give the client any descriptive name.
 
-Output:
+Enter the exact callback URL shown by your Home Assistant instance. To register or change the callback on an existing confidential client, run:
+
+```bash
+docker compose exec anylist-mcp node scripts/create-client.js --set-redirect CLIENT_ID "https://my.home-assistant.io/redirect/oauth"
+```
+
+Output for a new client:
 
 ```
 Client created successfully.

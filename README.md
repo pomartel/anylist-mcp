@@ -107,8 +107,10 @@ Some MCP clients — like Home Assistant — require a pre-registered `client_id
 
 ```bash
 # The server must be running (make dev or make prod)
-make create-client EMAIL=you@example.com NAME="Home Assistant"
+make create-client EMAIL=you@example.com NAME="Home Assistant" REDIRECT_URI="https://my.home-assistant.io/redirect/oauth"
 ```
+
+Use the exact callback URL shown by your Home Assistant installation. Clients that use only the client credentials grant can omit the callback.
 
 This prints a `client_id` and `client_secret`. **Save the secret immediately** — it is hashed in the database and cannot be retrieved later.
 

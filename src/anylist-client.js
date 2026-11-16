@@ -1,6 +1,7 @@
 import AnyList from '../anylist-js/lib/index.js';
 import { normalizeRecipe } from './recipe-normalizer.js';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const governorModule = process.env.ANYLIST_GOVERNOR_MODULE;
 const governorDatabase = process.env.ANYLIST_GOVERNOR_DATABASE;
@@ -47,13 +48,11 @@ class AnyListClient {
 
     if (!username || !password) {
       const error = new Error('Missing AnyList credentials. Provide username and password.');
-      console.error(error.message);
       throw error;
     }
 
     if (!targetListName) {
       const error = new Error('No list name provided and no default list configured');
-      console.error(error.message);
       throw error;
     }
 
@@ -72,22 +71,18 @@ class AnyListClient {
       await this.loading;
 
       // Find the target list
-      console.error(`Looking for list: "${targetListName}"`);
       this.targetList = this.client.getListByName(targetListName);
 
       if (!this.targetList) {
         const error = new Error(`List "${targetListName}" not found. Available lists: ${this.getAvailableListNames().join(', ')}`);
-        console.error(error.message);
         throw error;
       }
 
-      console.error(`Connected to list: "${this.targetList.name}"`);
 
       return true;
 
     } catch (error) {
       const wrappedError = new Error(`Failed to connect to AnyList: ${error.message}`);
-      console.error(wrappedError.message);
       throw wrappedError;
     }
   }
@@ -97,7 +92,10 @@ class AnyListClient {
       if (this.governor) await this.client.getLists();
       return;
     }
-    const client = new AnyList({ email: username, password });
+    const credentialsFile = process.env.DATA_DIR && this._username
+      ? join(process.env.DATA_DIR, 'credentials-' + createHash('sha256').update(username.trim().toLowerCase()).digest('hex'))
+      : undefined;
+    const client = new AnyList({ email: username, password, credentialsFile });
     try {
       if (this.governor) governHttp(client, this.governor);
       // The shared sync daemon owns recovery. Governed MCP sessions read on
@@ -135,7 +133,6 @@ class AnyListClient {
   async addItem(itemName, quantity = 1, notes = null, category = "other", store = null) {
     if (!this.targetList) {
       const error = new Error('Not connected to any list. Call connect() first.');
-      console.error(error.message);
       throw error;
     }
 
@@ -154,12 +151,10 @@ class AnyListClient {
             existingItem.details = notes;
           }
 
-          console.error(`Unchecked existing item: ${existingItem.name}`);
           existingItem.save();
         } else {
 
           // Item already exists and is unchecked, no action needed
-          console.error(`Item "${itemName}" already exists and is active`);
           existingItem.quantity = quantity;
           if (notes !== null) {
             existingItem.details = notes;
@@ -187,7 +182,6 @@ class AnyListClient {
         const newItem = this.client.createItem(itemOptions);
         await this.targetList.addItem(newItem);
 
-        console.error(`Added new item: ${newItem.name}`);
       }
 
       if (store) {
@@ -196,7 +190,6 @@ class AnyListClient {
 
     } catch (error) {
       const wrappedError = new Error(`Failed to add item "${itemName}": ${error.message}`);
-      console.error(wrappedError.message);
       throw wrappedError;
     }
   }
@@ -204,7 +197,6 @@ class AnyListClient {
   async deleteItem(itemName) {
     if (!this.targetList) {
       const error = new Error('Not connected to any list. Call connect() first.');
-      console.error(error.message);
       throw error;
     }
 
@@ -213,16 +205,13 @@ class AnyListClient {
 
       if (!existingItem) {
         const error = new Error(`Item "${itemName}" not found in list, so can't delete it`);
-        console.error(error.message);
         throw error;
       }
 
       await this.targetList.removeItem(existingItem);
-      console.error(`Deleted item: ${existingItem.name}`);
 
     } catch (error) {
       const wrappedError = new Error(`Failed to delete item "${itemName}": ${error.message}`);
-      console.error(wrappedError.message);
       throw wrappedError;
     }
   }
@@ -230,7 +219,6 @@ class AnyListClient {
   async removeItem(itemName) {
     if (!this.targetList) {
       const error = new Error('Not connected to any list. Call connect() first.');
-      console.error(error.message);
       throw error;
     }
 
@@ -240,7 +228,6 @@ class AnyListClient {
 
       if (!existingItem) {
         const error = new Error(`Item "${itemName}" not found in list, so can't check it`);
-        console.error(error.message);
         throw error;
       }
 
@@ -248,13 +235,9 @@ class AnyListClient {
       if (!existingItem.checked) {
         existingItem.checked = true;
         await existingItem.save();
-        console.error(`Checked off item: ${existingItem.name}`);
-      } else {
-        console.error(`Item "${itemName}" is already checked off`);
       }
     } catch (error) {
       const wrappedError = new Error(`Failed to remove item "${itemName}": ${error.message}`);
-      console.error(wrappedError.message);
       throw wrappedError;
     }
   }
@@ -262,7 +245,6 @@ class AnyListClient {
   async uncheckItem(itemName) {
     if (!this.targetList) {
       const error = new Error('Not connected to any list. Call connect() first.');
-      console.error(error.message);
       throw error;
     }
 
@@ -271,7 +253,6 @@ class AnyListClient {
 
       if (!existingItem) {
         const error = new Error(`Item "${itemName}" not found in list, so can't uncheck it`);
-        console.error(error.message);
         throw error;
       }
 
@@ -279,13 +260,9 @@ class AnyListClient {
       if (existingItem.checked) {
         existingItem.checked = false;
         await existingItem.save();
-        console.error(`Unchecked item: ${existingItem.name}`);
-      } else {
-        console.error(`Item "${itemName}" is already unchecked`);
       }
     } catch (error) {
       const wrappedError = new Error(`Failed to uncheck item "${itemName}": ${error.message}`);
-      console.error(wrappedError.message);
       throw wrappedError;
     }
   }
@@ -293,7 +270,6 @@ class AnyListClient {
   async getItems(includeChecked = false, includeNotes = false) {
     if (!this.targetList) {
       const error = new Error('Not connected to any list. Call connect() first.');
-      console.error(error.message);
       throw error;
     }
 
@@ -324,7 +300,6 @@ class AnyListClient {
       });
     } catch (error) {
       const wrappedError = new Error(`Failed to get items: ${error.message}`);
-      console.error(wrappedError.message);
       throw wrappedError;
     }
   }
@@ -345,8 +320,8 @@ class AnyListClient {
           }
         }
       }
-    } catch (error) {
-      console.error(`Failed to build category map: ${error.message}`);
+    } catch {
+      // Category metadata is optional.
     }
     return categoryMap;
   }
@@ -386,7 +361,6 @@ class AnyListClient {
     }
     try {
       const store = await this.targetList.createStore(storeName);
-      console.error(`Created store: ${store.name}`);
       return store;
     } catch (error) {
       throw new Error(`Failed to create store "${storeName}": ${error.message}`);
@@ -403,7 +377,6 @@ class AnyListClient {
     }
     try {
       await this.targetList.deleteStore(store.identifier);
-      console.error(`Deleted store: ${storeName}`);
     } catch (error) {
       throw new Error(`Failed to delete store "${storeName}": ${error.message}`);
     }
@@ -506,7 +479,6 @@ class AnyListClient {
         recipe.isNewRecipeFromWebImport = true;
         recipe.creationTimestamp = Date.now() / 1000;
         await recipe.save();
-        console.error(`Imported recipe from URL (native): ${recipe.name}`);
 
         return {
           name: recipe.name,
@@ -526,7 +498,6 @@ class AnyListClient {
     }
 
     // Fallback: use normalizer
-    console.error(`Native import failed (${nativeError}), trying normalizer fallback...`);
     try {
       const normalized = await normalizeRecipe({ url });
       const created = await this.createRecipe({
@@ -540,7 +511,6 @@ class AnyListClient {
         cookTime: normalized.cookTime,
         servings: normalized.servings,
       });
-      console.error(`Imported recipe from URL (normalizer fallback): ${created.name}`);
 
       return {
         name: created.name,
@@ -580,7 +550,6 @@ class AnyListClient {
       }
       const recipe = await this.client.createRecipe(recipeObj);
       await recipe.save();
-      console.error(`Created recipe: ${recipe.name}`);
       return { identifier: recipe.identifier, name: recipe.name };
     } catch (error) {
       throw new Error(`Failed to create recipe: ${error.message}`);
@@ -657,7 +626,6 @@ class AnyListClient {
 
       const recipe = await this.client.createRecipe(merged);
       await recipe.save();
-      console.error(`Updated recipe: ${recipe.name}`);
       return { identifier: recipe.identifier, name: recipe.name };
     } catch (error) {
       throw new Error(`Failed to update recipe: ${error.message}`);
@@ -675,7 +643,6 @@ class AnyListClient {
         throw new Error(`Recipe "${recipeName}" not found`);
       }
       await recipe.delete();
-      console.error(`Deleted recipe: ${recipe.name}`);
     } catch (error) {
       throw new Error(`Failed to delete recipe: ${error.message}`);
     }
@@ -733,7 +700,6 @@ class AnyListClient {
       if (details) eventObj.details = details;
       const event = await this.client.createEvent(eventObj);
       await event.save();
-      console.error(`Created meal plan event for ${date}`);
       return { identifier: event.identifier, date: date };
     } catch (error) {
       throw new Error(`Failed to create meal plan event: ${error.message}`);
@@ -751,7 +717,6 @@ class AnyListClient {
         throw new Error(`Meal plan event "${eventId}" not found`);
       }
       await event.delete();
-      console.error(`Deleted meal plan event: ${eventId}`);
     } catch (error) {
       throw new Error(`Failed to delete meal plan event: ${error.message}`);
     }
@@ -836,7 +801,6 @@ class AnyListClient {
       }
       const collection = this.client.createRecipeCollection({ name, recipeIds });
       await collection.save();
-      console.error(`Created recipe collection: ${name}`);
       return { identifier: collection.identifier, name: collection.name };
     } catch (error) {
       throw new Error(`Failed to create recipe collection: ${error.message}`);
@@ -854,7 +818,6 @@ class AnyListClient {
       if (!raw) throw new Error(`Recipe collection "${name}" not found`);
       const collection = this.client.createRecipeCollection(raw);
       await collection.delete();
-      console.error(`Deleted recipe collection: ${name}`);
     } catch (error) {
       throw new Error(`Failed to delete recipe collection: ${error.message}`);
     }
@@ -864,10 +827,8 @@ class AnyListClient {
     if (this.client) {
       try {
         await this.client.teardown();
-        console.error('Disconnected from AnyList');
       } catch (error) {
         const wrappedError = new Error(`Error during disconnect: ${error.message}`);
-        console.error(wrappedError.message);
         throw wrappedError;
       }
     }

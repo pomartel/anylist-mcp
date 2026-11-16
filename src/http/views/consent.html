@@ -26,7 +26,7 @@
   <div class="card">
     <div class="logo">🛒</div>
     <h1>Authorize Access</h1>
-    <p>A client is requesting access to your AnyList MCP server.</p>
+    <p>Allow this application to access and change your AnyList data?</p>
 
     <div class="scope-box">
       <strong>Requested permissions:</strong>
@@ -34,13 +34,14 @@
     </div>
 
     <form method="POST" action="/oauth/consent">
+      <input type="hidden" name="consentToken" value="{{consentToken}}">
       <div class="actions">
         <button type="submit" name="approve" value="yes" class="btn btn-primary">Allow</button>
         <button type="submit" name="approve" value="no" class="btn btn-deny">Deny</button>
       </div>
     </form>
 
-    <p class="client-id">Client ID: {{clientId}}</p>
+    <p class="client-id">Callback: {{redirectUri}}<br>Client ID: {{clientId}}</p>
   </div>
 </body>
 </html>

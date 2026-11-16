@@ -37,5 +37,5 @@ down: ## Stop all Docker services
 logs: ## Tail Docker logs
 	docker compose logs -f
 
-create-client: ## Create an OAuth client. Usage: make create-client EMAIL=you@example.com NAME="App Name"
-	docker compose exec anylist-mcp node scripts/create-client.js $(EMAIL) "$(NAME)"
+create-client: ## Create an OAuth client. Usage: make create-client EMAIL=you@example.com NAME="App Name" REDIRECT_URI="https://host/callback"
+	docker compose exec anylist-mcp node scripts/create-client.js "$(EMAIL)" "$(NAME)" "$(REDIRECT_URI)"

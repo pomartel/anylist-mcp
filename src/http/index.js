@@ -20,7 +20,7 @@ import { registerAllTools } from "../tools/index.js";
 import { isGoogleEnabled } from "./auth/providers/google.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = parseInt(process.env.PORT, 10) || 3000;
+const PORT = Number(process.env.PORT ?? 3000);
 
 // ── Startup validation ────────────────────────────────────────────────────────
 
@@ -59,6 +59,7 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
+    sameSite: "lax",
     // secure=true only when the request actually arrived over HTTPS (via proxy).
     // When testing locally over plain HTTP this will be false, allowing cookies to work.
     secure: "auto",
@@ -69,12 +70,12 @@ app.use(session({
 // ── Request logging ───────────────────────────────────────────────────────────
 
 app.use((req, res, next) => {
+  res.set("Content-Security-Policy", "frame-ancestors 'none'");
+  res.set("Referrer-Policy", "no-referrer");
   const start = Date.now();
   res.on("finish", () => {
-    const body = req.method === "POST" && (req.path === "/sse" || req.path === "/mcp") && req.body
-      ? " body:" + JSON.stringify(req.body).slice(0, 200)
-      : "";
-    console.log(`${req.method} ${req.path} → ${res.statusCode} (${Date.now() - start}ms) session:${req.session?.id?.slice(0, 8) ?? "none"} user:${req.session?.userId ?? "-"}${body}`);
+    const route = req.route?.path ?? "unmatched";
+    console.log(`${req.method} ${route} → ${res.statusCode} (${Date.now() - start}ms)`);
   });
   next();
 });
@@ -84,28 +85,10 @@ app.set("views", path.join(__dirname, "views"));
 app.set("view engine", "html");
 app.engine("html", (filePath, options, callback) => {
   try {
-    let content = readFileSync(filePath, "utf8");
-    for (const [k, v] of Object.entries(options)) {
-      // Section toggle: <!-- if:key -->...<!-- endif:key -->
-      // Truthy = boolean true, non-empty string, non-zero number
-      const startTag = `<!-- if:${k} -->`;
-      const endTag = `<!-- endif:${k} -->`;
-      if (content.includes(startTag)) {
-        const truthy = v !== null && v !== undefined && v !== false && v !== "" && v !== 0;
-        if (!truthy) {
-          const re = new RegExp(startTag + "[\\s\\S]*?" + endTag, "g");
-          content = content.replace(re, "");
-        } else {
-          content = content.replaceAll(startTag, "").replaceAll(endTag, "");
-        }
-      }
-      // Value replacement: {{key}}
-      if (typeof v === "string" || typeof v === "number") {
-        content = content.replaceAll(`{{${k}}}`, String(v));
-      } else if (v === null || v === undefined) {
-        content = content.replaceAll(`{{${k}}}`, "");
-      }
-    }
+    const escapes = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+    const content = readFileSync(filePath, "utf8")
+      .replace(/<!-- if:(\w+) -->([\s\S]*?)<!-- endif:\1 -->/g, (_, key, section) => options[key] ? section : "")
+      .replace(/{{(\w+)}}/g, (_, key) => String(options[key] ?? "").replace(/[&<>"']/g, c => escapes[c]));
     callback(null, content);
   } catch (err) {
     callback(err);
@@ -159,7 +142,7 @@ async function handleMcp(req, res) {
       ? mcpSessions.get(sessionId)
       : null;
 
-    if (!mcpSession) {
+    if (!mcpSession || mcpSession.userId !== req.userId || !(mcpSession.transport instanceof StreamableHTTPServerTransport)) {
       if (!isInitializeRequest(req.body)) {
         return res.status(404).json({ error: "Session not found. Send an initialize request first." });
       }
@@ -171,7 +154,7 @@ async function handleMcp(req, res) {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomBytes(16).toString("hex"),
         onsessioninitialized: (sid) => {
-          mcpSessions.set(sid, { server: mcpServer, transport });
+          mcpSessions.set(sid, { userId, server: mcpServer, transport });
         },
       });
 
@@ -187,7 +170,7 @@ async function handleMcp(req, res) {
 
     await mcpSession.transport.handleRequest(req, res, req.body);
   } catch (err) {
-    console.error("MCP request error:", err);
+    console.error("MCP request error");
     if (!res.headersSent) {
       res.status(500).json({ error: "Internal server error" });
     }
@@ -205,11 +188,11 @@ function makeSseConnectHandler(postEndpoint) {
       const transport = new SSEServerTransport(postEndpoint, res);
       const sessionId = transport.sessionId;
       const mcpServer = createMcpServer(req.userId);
-      mcpSessions.set(sessionId, { server: mcpServer, transport });
+      mcpSessions.set(sessionId, { userId: req.userId, server: mcpServer, transport });
       transport.onclose = () => { mcpSessions.delete(sessionId); };
       await mcpServer.connect(transport); // connect() calls transport.start() internally
     } catch (err) {
-      console.error("SSE connect error:", err);
+      console.error("SSE connect error");
       if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
     }
   };
@@ -218,12 +201,12 @@ function makeSseConnectHandler(postEndpoint) {
 async function handleSseMessage(req, res) {
   try {
     const mcpSession = req.query.sessionId ? mcpSessions.get(req.query.sessionId) : null;
-    if (!mcpSession || !(mcpSession.transport instanceof SSEServerTransport)) {
+    if (!mcpSession || mcpSession.userId !== req.userId || !(mcpSession.transport instanceof SSEServerTransport)) {
       return res.status(404).json({ error: "SSE session not found." });
     }
     await mcpSession.transport.handlePostMessage(req, res, req.body);
   } catch (err) {
-    console.error("SSE message error:", err);
+    console.error("SSE message error");
     if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
   }
 }
@@ -231,6 +214,14 @@ async function handleSseMessage(req, res) {
 app.get("/sse",       requireBearerToken, makeSseConnectHandler("/messages"));
 app.post("/sse",      requireBearerToken, handleMcp); // HA uses Streamable HTTP at this URL
 app.post("/messages", requireBearerToken, handleSseMessage);
+
+// Parser and transport errors can contain request data. Log only status and method.
+app.use((error, req, res, next) => {
+  if (res.headersSent) return res.destroy();
+  const status = error.status >= 400 && error.status < 600 ? error.status : 500;
+  console.warn(`${req.method} request failed → ${status}`);
+  res.sendStatus(status);
+});
 
 // ── Cleanup job ───────────────────────────────────────────────────────────────
 
@@ -241,8 +232,8 @@ setInterval(deleteExpiredTokens, 60 * 60 * 1000); // hourly
 validateEnv();
 getDb(); // Initialize DB (runs migrations)
 
-app.listen(PORT, () => {
-  console.log(`anylist-mcp HTTP server listening on port ${PORT}`);
+const listener = app.listen(PORT, process.env.HOST, () => {
+  console.log(`anylist-mcp HTTP server listening on port ${listener.address().port}`);
   console.log(`Base URL: ${process.env.BASE_URL || "(derived from request host)"}`);
   console.log(`Google OAuth: ${isGoogleEnabled() ? "enabled" : "disabled (set GOOGLE_CLIENT_ID to enable)"}`);
 });

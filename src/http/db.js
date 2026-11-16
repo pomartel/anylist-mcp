@@ -222,10 +222,6 @@ export function createConfidentialClient({ clientId, clientSecretHash, userId, c
   return getDb().prepare("SELECT * FROM oauth_clients WHERE client_id = ?").get(clientId);
 }
 
-export function getOAuthClientWithSecret(clientId) {
-  return getDb().prepare("SELECT * FROM oauth_clients WHERE client_id = ?").get(clientId);
-}
-
 // ── OAuth code queries ────────────────────────────────────────────────────────
 
 export function saveOAuthCode({ code, clientId, userId, redirectUri, codeChallenge, challengeMethod, scope }) {
@@ -237,12 +233,18 @@ export function saveOAuthCode({ code, clientId, userId, redirectUri, codeChallen
   `).run(code, clientId, userId, redirectUri, codeChallenge, challengeMethod || "S256", scope || null, expiresAt);
 }
 
-export function consumeOAuthCode(code) {
-  const row = getDb().prepare("SELECT * FROM oauth_codes WHERE code = ?").get(code);
-  if (!row) return null;
-  getDb().prepare("DELETE FROM oauth_codes WHERE code = ?").run(code);
-  if (row.expires_at < Math.floor(Date.now() / 1000)) return null;
-  return row;
+export function getOAuthCode(code) {
+  return getDb().prepare("SELECT * FROM oauth_codes WHERE code = ? AND expires_at > unixepoch()").get(code);
+}
+
+export function exchangeOAuthCode(code, tokens) {
+  const db = getDb();
+  return db.transaction(() => {
+    const removed = db.prepare("DELETE FROM oauth_codes WHERE code = ? AND expires_at > unixepoch()").run(code);
+    if (!removed.changes) return false;
+    saveOAuthTokens(tokens);
+    return true;
+  })();
 }
 
 // ── OAuth token queries ───────────────────────────────────────────────────────
@@ -272,8 +274,14 @@ export function getTokenByRefresh(refreshToken) {
   return getDb().prepare("SELECT * FROM oauth_tokens WHERE refresh_token = ?").get(refreshToken);
 }
 
-export function deleteTokensByRefresh(refreshToken) {
-  getDb().prepare("DELETE FROM oauth_tokens WHERE refresh_token = ?").run(refreshToken);
+export function rotateOAuthTokens(refreshToken, tokens) {
+  const db = getDb();
+  return db.transaction(() => {
+    const removed = db.prepare("DELETE FROM oauth_tokens WHERE refresh_token = ? AND refresh_expires_at > unixepoch()").run(refreshToken);
+    if (!removed.changes) return false;
+    saveOAuthTokens(tokens);
+    return true;
+  })();
 }
 
 export function deleteExpiredTokens() {
