@@ -6,9 +6,11 @@ Two deployment modes:
 - **Local (stdio)** — runs on your machine alongside Claude Desktop or Claude Code. Fastest setup, no server required.
 - **HTTP server** — runs in Docker behind a Cloudflare Tunnel. Required for Claude Web, Claude Mobile, or home assistant and useful for sharing access across devices or users.
 
-## Shared AnyList cooldown
+## Shared AnyList download limits
 
-When running alongside alexa-anylist-sync, set `ANYLIST_GOVERNOR_MODULE` to its built `dist/src/anylist-governor.js` and `ANYLIST_GOVERNOR_DATABASE` to the absolute path of its account SQLite file. The service user needs write access to the database directory. For the matching account, MCP reads lists on demand, records HTTP 429 responses, and waits for the synchronizer to confirm recovery. Other accounts keep their normal session behavior.
+When running alongside alexa-anylist-sync, set `ANYLIST_GOVERNOR_MODULE` to its built `dist/src/anylist-governor.js` and `ANYLIST_GOVERNOR_DATABASE` to the absolute path of its account SQLite file. The service user needs write access to the database directory. For the matching account, every uncached account-data download uses the shared budget of six downloads per rolling minute and 60 per rolling hour. This covers lists, recipes, meal plans and collections. Cached lookups use the data already downloaded. When the budget is exhausted, the tool returns an error with the time at which the request can be retried.
+
+MCP reads lists on demand, records HTTP 429 responses, and waits for the synchronizer to confirm recovery. Other accounts use their normal session behavior. Deploy the same governor module version for both services to apply matching limits.
 
 ## Tools Overview
 

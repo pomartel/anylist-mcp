@@ -23,6 +23,11 @@ export function governHttp(client, governor) {
   };
   client.authClient = client.authClient.extend(options);
   client.client = client.client.extend(options);
+  const getData = client._getUserData.bind(client);
+  client._getUserData = refresh => {
+    if (!refresh && client._userData) return getData(refresh);
+    return governor.download(() => getData(refresh));
+  };
 }
 
 class AnyListClient {

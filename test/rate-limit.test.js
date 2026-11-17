@@ -50,3 +50,40 @@ test('governed sessions refresh on demand without opening a second recovery sock
   await client.connect();
   assert.equal(reads, 2);
 });
+
+test('all MCP account-data consumers share a budget while cached lookups consume no slot', async t => {
+  let calls = 0, charged = 0;
+  const server = createServer((_req, res) => { calls++; res.end('fixture'); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const sdk = new AnyList({ email: 'test@example.invalid', password: 'test' });
+  sdk.clientId = 'test-client'; sdk.accessToken = 'test-token';
+  sdk.client = sdk.client.extend({ prefixUrl: 'http://127.0.0.1:' + server.address().port });
+  sdk.protobuf = { PBUserDataResponse: { decode: () => ({
+    shoppingListsResponse: { newLists: [], listResponses: [] },
+    starterListsResponse: { recentItemListsResponse: { listResponses: [] }, favoriteItemListsResponse: { listResponses: [] } },
+    recipeDataResponse: { recipes: [], recipeCollections: [] },
+    mealPlanningCalendarResponse: { calendarId: 'calendar', events: [], labels: [] },
+  }) } };
+  const refused = new Error('download budget exhausted; retry after a minute');
+  governHttp(sdk, {
+    assertAvailable() {},
+    normalize: error => error,
+    download: async operation => { if (charged >= 6) throw refused; charged++; return operation(); },
+  });
+  await sdk.getLists();
+  await sdk._getUserData(false);
+  await sdk.getRecipes(false);
+  await sdk.getMealPlanningCalendarEvents(false);
+  assert.equal(charged, 1);
+  await sdk.getRecipes();
+  await sdk.getMealPlanningCalendarEvents();
+  await sdk._getUserData(true);
+  await sdk.getLists();
+  await sdk.getRecipes();
+  await assert.rejects(sdk._getUserData(true), error => error === refused);
+  assert.deepEqual([charged, calls], [6, 6]);
+  // A cached recipe/category lookup still works after exhausting the budget.
+  await sdk._getUserData(false);
+  assert.deepEqual([charged, calls], [6, 6]);
+});
