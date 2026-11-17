@@ -6,6 +6,8 @@ services:
       - "${PORT:-3000}:3000"
     environment:
       BASE_URL: ${BASE_URL:-}
+      # cloudflared connects on the Docker bridge. Set this to its exact address when available.
+      TRUSTED_PROXY: ${TRUSTED_PROXY:-loopback,172.16.0.0/12}
       SERVER_SECRET_KEY: ${SERVER_SECRET_KEY}
       SESSION_SECRET: ${SESSION_SECRET}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}

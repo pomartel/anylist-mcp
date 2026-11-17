@@ -1,5 +1,6 @@
 import { validRedirectUri } from "../redirect-uri.js";
 import { Router } from "express";
+import { rateLimit } from "express-rate-limit";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 import {
@@ -26,6 +27,22 @@ function renderLogin(res, error = "") {
 }
 
 const router = Router();
+
+function requestLimit(identifier, limit, windowMs, options = {}) {
+  return rateLimit({
+    identifier, limit, windowMs, standardHeaders: "draft-8", legacyHeaders: false,
+    message: { error: "rate_limited", error_description: "Try again after the Retry-After interval." },
+    ...options,
+  });
+}
+
+const minute = 60_000;
+const signInLimit = requestLimit("sign-in", 10, 15 * minute);
+const oauthLimit = requestLimit("oauth", 60, minute);
+const registrationLimit = requestLimit("registration", 5, 60 * minute);
+const totalRegistrations = requestLimit("total-registrations", 30, 60 * minute, {
+  keyGenerator: () => "all",
+});
 
 // BASE_URL is optional: if not set, derive from the incoming request so the
 // server works behind any proxy (including a Cloudflare quick tunnel) without
@@ -68,7 +85,7 @@ router.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protect
 
 // ── Dynamic Client Registration (RFC 7591) ────────────────────────────────────
 // Home ASsistent expects /register, but Claude expects /oauth/register, so we support both.
-router.post(["/oauth/register", "/register"], (req, res) => {
+router.post(["/oauth/register", "/register"], registrationLimit, totalRegistrations, (req, res) => {
   const { redirect_uris, client_name } = req.body || {};
   const clientId = randomUUID();
   const redirectUri = Array.isArray(redirect_uris) ? redirect_uris[0] : redirect_uris || null;
@@ -90,7 +107,7 @@ router.post(["/oauth/register", "/register"], (req, res) => {
 // ── Authorization Endpoint ────────────────────────────────────────────────────
 // Home ASsistent expects /authorize, but Claude expects /oauth/authorize, so we support both.
 
-router.get(["/oauth/authorize", "/authorize"], (req, res) => {
+router.get(["/oauth/authorize", "/authorize"], oauthLimit, (req, res) => {
   const { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope } = req.query;
 
   const client = typeof client_id === "string" && getOAuthClient(client_id);
@@ -121,7 +138,7 @@ router.get(["/oauth/authorize", "/authorize"], (req, res) => {
 
 // ── Token Endpoint ────────────────────────────────────────────────────────────
 
-router.post(["/oauth/token", "/token"], async (req, res) => {
+router.post(["/oauth/token", "/token"], oauthLimit, async (req, res) => {
   const body = req.body || {};
   const { grant_type } = body;
   res.set("Cache-Control", "no-store");
@@ -228,7 +245,7 @@ async function handleClientCredentialsGrant(req, res) {
 
 // ── Login / Registration form handlers ───────────────────────────────────────
 
-router.post("/auth/login", async (req, res) => {
+router.post("/auth/login", signInLimit, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
     return renderLogin(res, "Email and password are required.");
@@ -241,7 +258,7 @@ router.post("/auth/login", async (req, res) => {
   }
 });
 
-router.post("/auth/register", async (req, res) => {
+router.post("/auth/register", signInLimit, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
     return renderLogin(res, "Email and password are required.");
@@ -254,7 +271,7 @@ router.post("/auth/register", async (req, res) => {
   }
 });
 
-router.post("/auth/google", async (req, res) => {
+router.post("/auth/google", signInLimit, async (req, res) => {
   const { credential } = req.body || {};
   try {
     const user = await loginWithGoogle(credential);

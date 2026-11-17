@@ -48,10 +48,8 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Trust the first proxy (Cloudflare Tunnel) so req.secure reflects the
-// original HTTPS connection. This also makes session cookies work correctly
-// when accessed through the tunnel.
-app.set("trust proxy", 1);
+// Only known reverse proxies can supply the client address and HTTPS scheme.
+app.set("trust proxy", process.env.TRUSTED_PROXY || "loopback");
 
 app.use(session({
   secret: process.env.SESSION_SECRET,

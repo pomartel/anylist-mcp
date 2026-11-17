@@ -75,6 +75,10 @@ Add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
 
 ## Installation: Claude Web / Claude Mobile
 
+The server limits sign-in requests to 10 per 15 minutes per source, and OAuth client registrations to 5 per hour per source and 30 per hour overall. Authorization and token requests share a separate limit of 60 per minute per source. A limited request receives HTTP 429 with a `Retry-After` header. These counters are local to the running server process.
+
+With a reverse proxy, set `TRUSTED_PROXY` to its IP address or CIDR and configure it to overwrite the forwarded client address. A native installation trusts loopback by default. The Compose configuration also trusts the default Docker bridge address range.
+
 Claude Web and Mobile require an HTTP MCP server accessible over HTTPS. This project includes a Docker-based HTTP server designed to run behind a Cloudflare Tunnel. The server is designed for self-hosting, but can theoretically support any number of users. You can (should?) restrict what email addresses are allowed to create accounts in the `allowed-emails.txt` file. 
 
 See **[docs/cloudflare-setup.md](docs/cloudflare-setup.md)** for the full setup guide, including:
